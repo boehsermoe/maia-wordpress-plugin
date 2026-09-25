@@ -1,0 +1,15 @@
+{
+    "name": "boehsermoe/maia-wordpress-plugin",
+    "description": "MAIA Connector: REST access to Elementor content for the MAIA commerce assistant",
+    "type": "wordpress-plugin",
+    "license": "proprietary",
+    "require": {
+        "php": ">=7.4"
+    },
+    "require-dev": {
+        "phpunit/phpunit": "^9.6"
+    },
+    "scripts": {
+        "test": "phpunit"
+    }
+}
