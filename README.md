@@ -1,6 +1,6 @@
 # MAIA Connector (maia-wordpress-plugin)
 
-WordPress plugin that lets the MAIA commerce assistant read and edit **Elementor** pages.
+WordPress plugin that lets the MAIA commerce assistant read and edit **Elementor** pages and read and change the **theme CSS**.
 
 Elementor keeps a page's layout as JSON in the private post meta `_elementor_data`, which the
 standard WordPress REST API does not expose. This plugin adds a small REST API under
@@ -34,6 +34,8 @@ Every route runs as that user and checks the user's WordPress capabilities:
 | --- | --- |
 | `GET /status`, `GET /elementor/documents` | `edit_posts` (the list only contains posts the user may edit) |
 | Everything on `/elementor/documents/{id}` | `edit_post` for that post |
+| `GET /theme`, `GET /theme/file` | `edit_theme_options` (administrator) |
+| `PUT /theme/css` | `edit_theme_options` **and** `edit_css` |
 
 Users without `unfiltered_html` (e.g. authors, or everyone when `DISALLOW_UNFILTERED_HTML` is set)
 get every string they write filtered through `wp_kses_post`.
@@ -51,7 +53,11 @@ Errors use the WordPress format `{ "code", "message", "data": { "status" } }`.
 | `maia_element_not_found` | 404 | No element with this id in the document |
 | `maia_invalid_settings` | 400 | `settings` is not an object of setting key → value |
 | `maia_conflict` | 409 | `expected_hash` no longer matches, so someone else changed the document |
-| `maia_save_failed` | 500 | Elementor refused to save |
+| `maia_save_failed` | 500 | Elementor (or, for `PUT /theme/css`, WordPress) refused to save |
+| `maia_invalid_css` | 400 | `css` of `PUT /theme/css` is not a text, is longer than 200,000 characters or contains markup (`<tag`, `</`) |
+| `maia_theme_unknown` | 404 | `theme` of `GET /theme/file` is neither the active theme nor its parent |
+| `maia_theme_file_invalid` | 400 | `path` is not a plain relative path to a `.css` file |
+| `maia_theme_file_not_found` | 404 | the stylesheet does not exist in the theme |
 
 ### `GET /status`
 
@@ -129,3 +135,49 @@ composer test   # unit tests of the tree logic (no WordPress needed)
 
 `includes/class-elementor-tree.php` holds the pure tree logic (find, outline, patch, validation).
 `includes/class-rest-controller.php` holds the routes, permissions and the Elementor calls.
+
+### Theme CSS
+
+MAIA works out from `GET /theme` which kind of theme a site has, reads the theme's stylesheets to learn its
+selectors, and changes the site's **Additional CSS** (the `custom_css` post the Customizer saves under
+Appearance → Customize → Additional CSS). The theme's own files are never written: Additional CSS survives theme
+updates, edits to `style.css` do not.
+
+#### `GET /theme`
+
+```json
+{
+  "theme": { "stylesheet": "klassic-child", "name": "Klassic Child", "version": "1.2", "is_block_theme": false,
+             "parent": { "stylesheet": "klassic", "name": "Klassic" } },
+  "additional_css": { "css": ".btn { color: #b00; }", "hash": "…", "writable": true },
+  "files": [ { "theme": "klassic-child", "path": "style.css", "size": 101 }, { "theme": "klassic", "path": "assets/css/main.css", "size": 4211 } ],
+  "files_cut": false
+}
+```
+
+`files` lists the `.css` files of the active theme and its parent (up to 3 levels deep, at most 100, `node_modules`,
+`vendor` and `.git` skipped, symlinks ignored). `additional_css.css` is the stored text itself (not the filtered
+`wp_get_custom_css()`), `hash` fingerprints it, `writable` says whether the calling user may change it.
+`is_block_theme` matters: a block theme keeps its CSS in the global styles (`wp/v2/global-styles`), and MAIA uses
+that instead of this route.
+
+#### `GET /theme/file?theme=klassic&path=assets/css/main.css`
+
+The text of one stylesheet, read only: `{ "theme", "path", "css", "size", "truncated" }`. At most 100,000 bytes are
+returned (`truncated: true` when it was longer). `theme` must be the active theme or its parent; `path` must be a plain
+relative path ending in `.css`: no `..`, no absolute or Windows paths, no other file types, and the real location has
+to stay inside the theme directory.
+
+#### `PUT /theme/css`
+
+Replaces the whole Additional CSS of the active theme. Body: `{ "css": "…", "expected_hash": "…" }`. An empty `css`
+removes it. `expected_hash` (the `hash` of the last read) makes a stale write fail with `409 maia_conflict`.
+
+```json
+{ "stylesheet": "klassic-child", "before": ".btn { color: #b00; }", "after": ".btn { color: #b00; }\n.card { top: 0; }", "hash": "…" }
+```
+
+`before` undoes the change when sent as `css`. The CSS must not contain markup (same rule as the Customizer). WordPress
+maps `edit_css` to `unfiltered_html`, which editors have on a single site, so the route also requires
+`edit_theme_options`; it is denied when `DISALLOW_UNFILTERED_HTML` is set and on a multisite for everyone but super admins.
+A page cache may keep serving the old CSS until the cache is cleared.

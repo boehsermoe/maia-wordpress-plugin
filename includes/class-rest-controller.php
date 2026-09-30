@@ -68,6 +68,59 @@ final class Rest_Controller {
 			)
 		);
 
+		register_rest_route(
+			self::NAMESPACE,
+			'/theme',
+			array(
+				'methods'             => WP_REST_Server::READABLE,
+				'callback'            => array( self::class, 'get_theme' ),
+				'permission_callback' => array( self::class, 'can_edit_theme' ),
+			)
+		);
+
+		register_rest_route(
+			self::NAMESPACE,
+			'/theme/file',
+			array(
+				'methods'             => WP_REST_Server::READABLE,
+				'callback'            => array( self::class, 'get_theme_file' ),
+				'permission_callback' => array( self::class, 'can_edit_theme' ),
+				'args'                => array(
+					'theme' => array(
+						'type'        => 'string',
+						'required'    => true,
+						'description' => 'Stylesheet slug of the active theme or of its parent theme.',
+					),
+					'path'  => array(
+						'type'        => 'string',
+						'required'    => true,
+						'description' => 'Relative path of a .css file inside that theme, as listed by GET /theme.',
+					),
+				),
+			)
+		);
+
+		register_rest_route(
+			self::NAMESPACE,
+			'/theme/css',
+			array(
+				'methods'             => 'PUT',
+				'callback'            => array( self::class, 'update_theme_css' ),
+				'permission_callback' => array( self::class, 'can_edit_css' ),
+				'args'                => array(
+					'css'           => array(
+						'type'        => 'string',
+						'required'    => true,
+						'description' => 'The complete new Additional CSS of the active theme. An empty text removes it.',
+					),
+					'expected_hash' => array(
+						'type'        => 'string',
+						'description' => 'Hash from the last read. The change is refused with 409 if the CSS changed since.',
+					),
+				),
+			)
+		);
+
 		$document_id = array(
 			'type'     => 'integer',
 			'required' => true,
@@ -128,6 +181,23 @@ final class Rest_Controller {
 	 */
 	public static function can_edit_posts(): bool {
 		return current_user_can( 'edit_posts' );
+	}
+
+	/**
+	 * Permission: may look at the theme (Appearance).
+	 */
+	public static function can_edit_theme(): bool {
+		return current_user_can( 'edit_theme_options' );
+	}
+
+	/**
+	 * Permission: may change the Additional CSS. Needs the theme options (as the Customizer does) AND edit_css.
+	 * WordPress maps edit_css to unfiltered_html, which editors have on a single site: edit_css alone would let
+	 * an editor change the site's design. It is denied when DISALLOW_UNFILTERED_HTML is set and to
+	 * non-super-admins on a multisite.
+	 */
+	public static function can_edit_css(): bool {
+		return current_user_can( 'edit_theme_options' ) && current_user_can( 'edit_css' );
 	}
 
 	/**
@@ -314,6 +384,131 @@ final class Rest_Controller {
 				'element'     => null === $element ? null : Elementor_Tree::describe( $element ),
 			)
 		);
+	}
+
+	/**
+	 * GET /theme: what MAIA needs to work out which kind of theme this is and where its CSS lives:
+	 * the active theme (and its parent), whether it is a block theme, the Additional CSS and the
+	 * stylesheet files of the theme.
+	 */
+	public static function get_theme(): WP_REST_Response {
+		$theme  = wp_get_theme();
+		$parent = $theme->parent();
+		$files  = array();
+		$cut    = false;
+		foreach ( array_filter( array( $theme, $parent ) ) as $source ) {
+			$listing = Theme_Css::list_files( $source->get_stylesheet_directory() );
+			foreach ( $listing['files'] as $file ) {
+				$files[] = array( 'theme' => $source->get_stylesheet() ) + $file;
+			}
+			$cut = $cut || $listing['truncated'];
+		}
+		$css = self::additional_css();
+
+		return new WP_REST_Response(
+			array(
+				'theme'          => array(
+					'stylesheet'     => $theme->get_stylesheet(),
+					'name'           => (string) $theme->get( 'Name' ),
+					'version'        => (string) $theme->get( 'Version' ),
+					'is_block_theme' => $theme->is_block_theme(),
+					'parent'         => $parent ? array(
+						'stylesheet' => $parent->get_stylesheet(),
+						'name'       => (string) $parent->get( 'Name' ),
+					) : null,
+				),
+				'additional_css' => array(
+					'css'      => $css,
+					'hash'     => Theme_Css::hash( $css ),
+					'writable' => self::can_edit_css(),
+				),
+				'files'          => $files,
+				'files_cut'      => $cut,
+			)
+		);
+	}
+
+	/**
+	 * GET /theme/file: one stylesheet of the active theme or its parent (read only).
+	 *
+	 * @param WP_REST_Request $request Request.
+	 * @return WP_REST_Response|WP_Error
+	 */
+	public static function get_theme_file( WP_REST_Request $request ) {
+		$theme  = wp_get_theme();
+		$wanted = (string) $request['theme'];
+		$source = null;
+		foreach ( array_filter( array( $theme, $theme->parent() ) ) as $candidate ) {
+			if ( $candidate->get_stylesheet() === $wanted ) {
+				$source = $candidate;
+			}
+		}
+		if ( null === $source ) {
+			return new WP_Error( 'maia_theme_unknown', 'Only the active theme and its parent theme can be read.', array( 'status' => 404 ) );
+		}
+		if ( ! Theme_Css::is_safe_path( $request['path'] ) ) {
+			return new WP_Error( 'maia_theme_file_invalid', 'The path must be a plain relative path to a .css file.', array( 'status' => 400 ) );
+		}
+		$file = Theme_Css::read_file( $source->get_stylesheet_directory(), $request['path'] );
+		if ( null === $file ) {
+			return new WP_Error( 'maia_theme_file_not_found', 'This stylesheet does not exist in the theme.', array( 'status' => 404 ) );
+		}
+
+		return new WP_REST_Response(
+			array(
+				'theme'     => $wanted,
+				'path'      => (string) $request['path'],
+				'css'       => $file['css'],
+				'size'      => $file['size'],
+				'truncated' => $file['truncated'],
+			)
+		);
+	}
+
+	/**
+	 * PUT /theme/css: replaces the Additional CSS of the active theme (the custom_css post, as the
+	 * Customizer saves it). The response's `before` undoes the change when sent as `css`.
+	 *
+	 * @param WP_REST_Request $request Request.
+	 * @return WP_REST_Response|WP_Error
+	 */
+	public static function update_theme_css( WP_REST_Request $request ) {
+		$css     = $request->get_param( 'css' );
+		$invalid = Theme_Css::validate_css( $css );
+		if ( $invalid ) {
+			return new WP_Error( 'maia_invalid_css', $invalid, array( 'status' => 400 ) );
+		}
+
+		$before   = self::additional_css();
+		$expected = $request->get_param( 'expected_hash' );
+		if ( is_string( $expected ) && '' !== $expected && ! hash_equals( Theme_Css::hash( $before ), $expected ) ) {
+			return new WP_Error( 'maia_conflict', 'The Additional CSS was changed since it was read. Read it again before changing it.', array( 'status' => 409 ) );
+		}
+
+		$saved = wp_update_custom_css_post( $css, array( 'stylesheet' => get_stylesheet() ) );
+		if ( is_wp_error( $saved ) ) {
+			return new WP_Error( 'maia_save_failed', 'WordPress did not save the Additional CSS.', array( 'status' => 500 ) );
+		}
+
+		// Read back what WordPress stored.
+		$after = self::additional_css();
+		return new WP_REST_Response(
+			array(
+				'stylesheet' => get_stylesheet(),
+				'before'     => $before,
+				'after'      => $after,
+				'hash'       => Theme_Css::hash( $after ),
+			)
+		);
+	}
+
+	/**
+	 * The stored Additional CSS of the active theme. Read from the post itself: wp_get_custom_css() also
+	 * applies filters, and writing that back would save CSS other code adds.
+	 */
+	private static function additional_css(): string {
+		$post = wp_get_custom_css_post();
+		return $post ? (string) $post->post_content : '';
 	}
 
 	/**
