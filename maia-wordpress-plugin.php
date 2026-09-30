@@ -2,7 +2,7 @@
 /**
  * Plugin Name:       MAIA Connector
  * Plugin URI:        https://github.com/boehsermoe/maia-wordpress-plugin
- * Description:       Lets the MAIA commerce assistant read and edit Elementor pages and read and change the theme CSS through the WordPress REST API.
+ * Description:       Lets the MAIA commerce assistant read and edit Elementor pages, read and change the theme CSS and clear the site cache through the WordPress REST API.
  * Version:           0.3.0
  * Requires at least: 6.0
  * Requires PHP:      7.4
@@ -18,6 +18,7 @@ defined( 'ABSPATH' ) || exit;
 define( 'MAIA_PLUGIN_VERSION', '0.3.0' );
 
 require_once __DIR__ . '/includes/class-elementor-tree.php';
+require_once __DIR__ . '/includes/class-cache-purger.php';
 require_once __DIR__ . '/includes/class-theme-css.php';
 require_once __DIR__ . '/includes/class-rest-controller.php';
 

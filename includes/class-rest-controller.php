@@ -70,6 +70,22 @@ final class Rest_Controller {
 
 		register_rest_route(
 			self::NAMESPACE,
+			'/cache/purge',
+			array(
+				'methods'             => WP_REST_Server::CREATABLE,
+				'callback'            => array( self::class, 'purge_cache' ),
+				'permission_callback' => array( self::class, 'can_manage_site' ),
+				'args'                => array(
+					'url' => array(
+						'type'        => 'string',
+						'description' => 'Purge only this page of the site. Without it the whole cache is emptied.',
+					),
+				),
+			)
+		);
+
+		register_rest_route(
+			self::NAMESPACE,
 			'/theme',
 			array(
 				'methods'             => WP_REST_Server::READABLE,
@@ -184,6 +200,13 @@ final class Rest_Controller {
 	}
 
 	/**
+	 * Permission: site administrators (manage_options), for actions on the whole site such as emptying the cache.
+	 */
+	public static function can_manage_site(): bool {
+		return current_user_can( 'manage_options' );
+	}
+
+	/**
 	 * Permission: may look at the theme (Appearance).
 	 */
 	public static function can_edit_theme(): bool {
@@ -230,6 +253,7 @@ final class Rest_Controller {
 					'active'  => self::elementor_active(),
 					'version' => defined( 'ELEMENTOR_VERSION' ) ? ELEMENTOR_VERSION : null,
 				),
+				'cache'             => Cache_Purger::detect(),
 			)
 		);
 	}
@@ -509,6 +533,27 @@ final class Rest_Controller {
 	private static function additional_css(): string {
 		$post = wp_get_custom_css_post();
 		return $post ? (string) $post->post_content : '';
+	}
+
+	/**
+	 * POST /cache/purge: empties the caches of the site, or purges one page of it.
+	 *
+	 * @param WP_REST_Request $request Request.
+	 * @return WP_REST_Response|WP_Error
+	 */
+	public static function purge_cache( WP_REST_Request $request ) {
+		$url = $request->get_param( 'url' );
+		if ( null === $url || '' === $url ) {
+			return new WP_REST_Response(
+				array( 'scope' => 'all' ) + Cache_Purger::purge_all()
+			);
+		}
+		if ( ! is_string( $url ) || ! Cache_Purger::is_site_url( $url, home_url() ) ) {
+			return new WP_Error( 'maia_cache_url_outside_site', 'The URL is not a page of this site.', array( 'status' => 400 ) );
+		}
+		return new WP_REST_Response(
+			array( 'scope' => 'url' ) + Cache_Purger::purge_url( $url )
+		);
 	}
 
 	/**

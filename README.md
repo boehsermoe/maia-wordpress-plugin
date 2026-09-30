@@ -1,6 +1,6 @@
 # MAIA Connector (maia-wordpress-plugin)
 
-WordPress plugin that lets the MAIA commerce assistant read and edit **Elementor** pages and read and change the **theme CSS**.
+WordPress plugin that lets the MAIA commerce assistant read and edit **Elementor** pages, read and change the **theme CSS**, and clear the site **cache**.
 
 Elementor keeps a page's layout as JSON in the private post meta `_elementor_data`, which the
 standard WordPress REST API does not expose. This plugin adds a small REST API under
@@ -34,6 +34,7 @@ Every route runs as that user and checks the user's WordPress capabilities:
 | --- | --- |
 | `GET /status`, `GET /elementor/documents` | `edit_posts` (the list only contains posts the user may edit) |
 | Everything on `/elementor/documents/{id}` | `edit_post` for that post |
+| `POST /cache/purge` | `manage_options` (administrator) |
 | `GET /theme`, `GET /theme/file` | `edit_theme_options` (administrator) |
 | `PUT /theme/css` | `edit_theme_options` **and** `edit_css` |
 
@@ -54,6 +55,7 @@ Errors use the WordPress format `{ "code", "message", "data": { "status" } }`.
 | `maia_invalid_settings` | 400 | `settings` is not an object of setting key → value |
 | `maia_conflict` | 409 | `expected_hash` no longer matches, so someone else changed the document |
 | `maia_save_failed` | 500 | Elementor (or, for `PUT /theme/css`, WordPress) refused to save |
+| `maia_cache_url_outside_site` | 400 | `url` of `/cache/purge` is not a page of this site |
 | `maia_invalid_css` | 400 | `css` of `PUT /theme/css` is not a text, is longer than 200,000 characters or contains markup (`<tag`, `</`) |
 | `maia_theme_unknown` | 404 | `theme` of `GET /theme/file` is neither the active theme nor its parent |
 | `maia_theme_file_invalid` | 400 | `path` is not a plain relative path to a `.css` file |
@@ -62,7 +64,8 @@ Errors use the WordPress format `{ "code", "message", "data": { "status" } }`.
 ### `GET /status`
 
 ```json
-{ "plugin_version": "0.1.0", "api_version": 1, "wordpress_version": "6.8", "elementor": { "active": true, "version": "3.30.0" } }
+{ "plugin_version": "0.3.0", "api_version": 1, "wordpress_version": "6.8", "elementor": { "active": true, "version": "3.30.0" },
+  "cache": { "active": ["WP Rocket", "WordPress object cache"], "url_purge": ["WP Rocket"] } }
 ```
 
 ### `GET /elementor/documents?search=&page=1&per_page=20`
@@ -136,6 +139,26 @@ composer test   # unit tests of the tree logic (no WordPress needed)
 `includes/class-elementor-tree.php` holds the pure tree logic (find, outline, patch, validation).
 `includes/class-rest-controller.php` holds the routes, permissions and the Elementor calls.
 
+### `POST /cache/purge`
+
+Empties the caches of the site, or purges one page. Body (optional): `{ "url": "https://shop.de/landing/" }`.
+The URL must be a page of this site (same host as the site address, http/https, no login data).
+
+```json
+{ "scope": "all", "cleared": ["WP Rocket", "WordPress object cache"], "failed": [] }
+```
+
+`cleared` names the caches that were emptied, `failed` the ones that threw an error (the others still run). An empty
+`cleared` means no supported cache is active (or, for a single page, none of them can purge one page).
+
+Supported: WP Rocket, W3 Total Cache, LiteSpeed Cache, WP Super Cache, WP Fastest Cache, Cache Enabler, SiteGround
+Optimizer, Breeze, Hummingbird, WP-Optimize, Autoptimize, Elementor's generated CSS and the WordPress object cache.
+Each one is only called when it is active, through its own public function or action. A single page can be purged in
+WP Rocket, W3 Total Cache, LiteSpeed Cache, WP Super Cache, Cache Enabler and SiteGround Optimizer; the object cache is
+only flushed for a full clear. `GET /status` shows which of them are active (`cache.active`, `cache.url_purge`).
+
+Not reached: caches outside WordPress (a CDN such as Cloudflare, the hoster's own page cache).
+
 ### Theme CSS
 
 MAIA works out from `GET /theme` which kind of theme a site has, reads the theme's stylesheets to learn its
@@ -180,4 +203,4 @@ removes it. `expected_hash` (the `hash` of the last read) makes a stale write fa
 `before` undoes the change when sent as `css`. The CSS must not contain markup (same rule as the Customizer). WordPress
 maps `edit_css` to `unfiltered_html`, which editors have on a single site, so the route also requires
 `edit_theme_options`; it is denied when `DISALLOW_UNFILTERED_HTML` is set and on a multisite for everyone but super admins.
-A page cache may keep serving the old CSS until the cache is cleared.
+A page cache may keep serving the old CSS until it is purged (`POST /cache/purge`).
