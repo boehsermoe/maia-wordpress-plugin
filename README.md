@@ -17,7 +17,9 @@ Scope of version 0.1: read the element tree, and change the **settings of one ex
 
 ## Installation
 
-1. Build the ZIP: `git archive --format=zip --prefix=maia-wordpress-plugin/ -o maia-wordpress-plugin.zip HEAD`
+1. Download the ZIP in MAIA: Settings → Shops → Details → **MAIA Connector** (the card also shows whether MAIA finds the
+   plugin). MAIA builds that ZIP with `backend/scripts/build-connector-zip.sh` in ai-commerce-agent; by hand:
+   `git archive --format=zip --prefix=maia-wordpress-plugin/ -o maia-wordpress-plugin.zip HEAD`
 2. WordPress → Plugins → Add New → Upload Plugin, upload the ZIP, activate it.
 3. WordPress → Users → Profile → Application Passwords: create one for MAIA and store the user
    name and the password in the MAIA shop settings.
